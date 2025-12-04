@@ -1,10 +1,10 @@
 """
 Скрипт для удаления дубликатов в JSON файлах
-Версия: 1.4 — Предварительная очистка сырой строки (RegEx pre-clean)
+Версия: 1.5 — полное удаление "\" перед парсингом
 
 Что делает скрипт:
 1. Читает файл построчно.
-2. ДО парсинга JSON очищает сырую строку от "\" и запрещённых символов.
+2. ДО парсинга JSON очищает сырую строку от всех "\" и всех управляющих символов.
 3. Парсит JSON.
 4. Нормализует title (удаляет пробелы по краям).
 5. Удаляет дубликаты.
@@ -39,26 +39,19 @@ class JSONCleanerApp:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("Очистка JSON от дубликатов v1.4")
+        self.root.title("Очистка JSON от дубликатов v1.5")
         self.root.geometry("750x550")
         self.root.resizable(True, True)
         
         # --- КОМПИЛЯЦИЯ РЕГУЛЯРНЫХ ВЫРАЖЕНИЙ (ДЛЯ СКОРОСТИ) ---
         
-        # 1. Управляющие символы (все от 0x00 до 0x1F, кроме табуляции \t, если она нужна, 
-        # но JSON стандарт запрещает raw tab внутри строк, так что удаляем всё подозрительное).
-        # Также удаляем DEL (0x7F) и расширенные управляющие (0x80-0x9F).
+        # Все управляющие символы:
+        # 0x00-0x1F, 0x7F (DEL), 0x80-0x9F (расширенные управляющие)
         self.re_control_chars = re.compile(r'[\x00-\x1f\x7f-\x9f]')
         
-        # 2. Обратный слеш "\".
-        # Задача: удалить "\", но НЕ удалять '\"' (экранированную кавычку), 
-        # иначе JSON сломается (строка закроется раньше времени).
-        # Логика: Найти "\" за которым НЕ следует кавычка.
-        self.re_backslash = re.compile(r'\\(?!")')
-
-        # 3. Пробельные символы для strip (включая неразрывные)
+        # Пробельные символы для strip (включая неразрывные)
         self.whitespace_chars = ' \t\n\r\x0b\x0c\xa0\ufeff'
-
+        
         self.selected_files = []
         self.stop_processing = False
         
@@ -149,7 +142,8 @@ class JSONCleanerApp:
             title="Выберите JSON файлы (до 10 штук)",
             filetypes=[("JSON файлы", "*.json"), ("Все файлы", "*.*")]
         )
-        if not files: return
+        if not files:
+            return
         if len(files) > 10:
             messagebox.showwarning("Лимит", "Можно выбрать максимум 10 файлов.\nВыбраны первые 10.")
             files = files[:10]
@@ -163,7 +157,8 @@ class JSONCleanerApp:
     
     
     def start_processing(self):
-        if not self.selected_files: return
+        if not self.selected_files:
+            return
         self.stop_processing = False
         self.btn_load.config(state=tk.DISABLED)
         self.btn_process.config(state=tk.DISABLED)
@@ -186,7 +181,8 @@ class JSONCleanerApp:
         self.log(f"🚀 Старт обработки {total_files} файлов...")
         
         for index, file_path in enumerate(self.selected_files):
-            if self.stop_processing: break
+            if self.stop_processing:
+                break
             
             file_name = os.path.basename(file_path)
             self.label_current_file.config(text=f"Файл: {file_name} ({index + 1}/{total_files})")
@@ -211,34 +207,32 @@ class JSONCleanerApp:
         
         if not self.stop_processing:
             messagebox.showinfo("Готово", "Обработка завершена!\nПроверьте *_errors.txt")
-
+    
+    
     def clean_raw_line(self, line):
         """
         Очищает сырую строку ДО попытки парсинга JSON.
-        Это позволяет исправить ошибки 'Invalid control character' и 'Invalid \escape'.
+        1) удаляет все управляющие символы (включая 0x02, 0x01 и т.п.),
+        2) удаляет вообще все символы "\" в любом месте строки.
         """
-        # 1. Удаляем все управляющие символы (включая \x02, \x01 и т.д.)
+        # 1. Удаляем все управляющие символы (0x00-0x1F, 0x7F-0x9F)
         line = self.re_control_chars.sub('', line)
         
-        # 2. Удаляем обратные слеши, ЕСЛИ за ними НЕ идет кавычка.
-        # Это превращает 'abc\def' в 'abcdef', но сохраняет 'abc\"def'.
-        line = self.re_backslash.sub('', line)
+        # 2. Удаляем все обратные слэши "\" (включая те, что стоят перед кавычками)
+        line = line.replace('\\', '')
         
         return line
-
+    
+    
     def normalize_title_final(self, title):
         """
         Финальная зачистка title уже после парсинга.
-        Удаляет пробелы по краям.
+        Удаляет пробелы по краям (включая неразрывные).
         """
         if not isinstance(title, str):
             title = str(title)
-        
-        # Здесь уже не нужно удалять control chars и слеши, 
-        # так как мы удалили их в clean_raw_line.
-        # Просто чистим пробелы. Так как мусор по краям удален, 
-        # strip() удалит все лишние пробелы корректно.
         return title.strip(self.whitespace_chars)
+    
     
     def process_single_file(self, file_path):
         file_dir = os.path.dirname(file_path)
@@ -247,7 +241,8 @@ class JSONCleanerApp:
         
         # Подсчет строк
         self.log("   Подсчёт строк...")
-        total_lines = sum(1 for _ in open(file_path, 'r', encoding='utf-8'))
+        with open(file_path, 'r', encoding='utf-8') as f_count:
+            total_lines = sum(1 for _ in f_count)
         self.log(f"   Строк: {total_lines:,}".replace(',', ' '))
         
         seen_titles = set()
@@ -260,7 +255,8 @@ class JSONCleanerApp:
         
         with open(file_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
-                if self.stop_processing: return
+                if self.stop_processing:
+                    return
                 if line_num % 10000 == 0:
                     self.progress_current['value'] = (line_num / total_lines) * 100
                     self.root.update_idletasks()
@@ -272,19 +268,17 @@ class JSONCleanerApp:
                     continue
                 
                 # --- ЭТАП 1: ОЧИСТКА СЫРОЙ СТРОКИ ---
-                # Исправляем невалидные символы до JSON парсера
                 cleaned_line = self.clean_raw_line(line)
                 
                 # --- ЭТАП 2: ПАРСИНГ ---
                 try:
-                    # allow_control_chars=True на случай, если что-то проскочило
                     record = json.loads(cleaned_line, strict=False)
                 except json.JSONDecodeError as e:
                     parse_errors += 1
                     skipped_items.append({
                         'reason': 'json_error',
                         'line_number': line_num,
-                        'content': original_line.strip(), # сохраняем оригинал в лог
+                        'content': original_line.strip(),  # сохраняем оригинал в лог
                         'error': str(e)
                     })
                     continue
@@ -301,7 +295,6 @@ class JSONCleanerApp:
                     raw_title = record.get('Наименование')
                 
                 if title_field is not None:
-                    # Нормализуем (обрезаем пробелы)
                     clean_title = self.normalize_title_final(raw_title)
                     record[title_field] = clean_title
                     
@@ -328,6 +321,7 @@ class JSONCleanerApp:
         self.log(f"   ✓ Пустых: {empty_lines}")
         self.log(f"   ✓ Дубликатов: {duplicates}")
         self.log(f"   ✓ Ок записей: {len(unique_records)}")
+        self.log(f"   ⚠️ Ошибок JSON: {parse_errors}")
         
         if skipped_items:
             self.log(f"   ⚠️ В отчете (errors): {len(skipped_items)}")
@@ -335,7 +329,7 @@ class JSONCleanerApp:
         else:
             self.log("   ✓ Ошибок нет")
             
-        # Сохранение
+        # Сохранение результата
         if len(unique_records) <= MAX_LINES_PER_FILE:
             out = os.path.join(file_dir, f"{file_name_no_ext}_cleaned.json")
             self.save_records(unique_records, out)
@@ -347,25 +341,36 @@ class JSONCleanerApp:
                 chunk = unique_records[i:i + MAX_LINES_PER_FILE]
                 out = os.path.join(file_dir, f"{file_name_no_ext}_cleaned_part{part}.json")
                 self.save_records(chunk, out)
+                self.log(f"   💾 Часть {part}: {len(chunk)} записей")
                 part += 1
     
+    
     def replace_field_values(self, record):
-        if 'stock' in record: record['stock'] = NEW_STOCK_VALUE
-        if 'Склад' in record: record['Склад'] = NEW_STOCK_VALUE
+        if 'stock' in record:
+            record['stock'] = NEW_STOCK_VALUE
+        if 'Склад' in record:
+            record['Склад'] = NEW_STOCK_VALUE
         
-        if 'under_order' in record: record['under_order'] = NEW_UNDER_ORDER_VALUE
-        if 'under-order' in record: record['under-order'] = NEW_UNDER_ORDER_VALUE
-        if 'Под заказ' in record: record['Под заказ'] = NEW_UNDER_ORDER_VALUE
+        if 'under_order' in record:
+            record['under_order'] = NEW_UNDER_ORDER_VALUE
+        if 'under-order' in record:
+            record['under-order'] = NEW_UNDER_ORDER_VALUE
+        if 'Под заказ' in record:
+            record['Под заказ'] = NEW_UNDER_ORDER_VALUE
         
-        if 'price' in record: record['price'] = NEW_PRICE_VALUE
-        if 'Цена' in record: record['Цена'] = NEW_PRICE_VALUE
+        if 'price' in record:
+            record['price'] = NEW_PRICE_VALUE
+        if 'Цена' in record:
+            record['Цена'] = NEW_PRICE_VALUE
         return record
+    
     
     def save_records(self, records, path):
         with open(path, 'w', encoding='utf-8') as f:
             for r in records:
                 f.write(json.dumps(r, ensure_ascii=False) + '\n')
-                
+    
+    
     def save_error_lines(self, items, path):
         js_err = [x for x in items if x['reason'] == 'json_error']
         dups = [x for x in items if x['reason'] == 'duplicate']
@@ -382,6 +387,7 @@ class JSONCleanerApp:
                 f.write("=== ДУБЛИКАТЫ ===\n")
                 for i in dups:
                     f.write(f"Стр {i['line_number']} ({i['field_name']})\nTitle: '{i['normalized_title']}'\n\n")
+
 
 if __name__ == "__main__":
     root = tk.Tk()
