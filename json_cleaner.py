@@ -1,15 +1,16 @@
 """
 Скрипт для удаления дубликатов в JSON файлах
-Версия: 1.6 — полное удаление "\" и замена внутренних кавычек в title/Наименование
+Версия: 1.7 — полное удаление "\" + замена внутренних кавычек + склейка обрезанных title
 
 Что делает скрипт:
 1. Читает файл построчно.
-2. ДО парсинга JSON очищает сырую строку от всех "\" и всех управляющих символов.
-3. ДО парсинга заменяет внутренние " в значениях title/Наименование на "-".
-4. Парсит JSON.
-5. Нормализует title (удаляет пробелы по краям).
-6. Удаляет дубликаты.
-7. Формирует отчет и итоговые файлы.
+2. Если встречаем строку {"title": " или {"Наименование": ", склеиваем её со следующей строкой.
+3. ДО парсинга JSON очищает сырую строку от всех "\" и всех управляющих символов.
+4. ДО парсинга заменяет внутренние " в значениях title/Наименование на "-".
+5. Парсит JSON.
+6. Нормализует title (удаляет пробелы по краям).
+7. Удаляет дубликаты.
+8. Формирует отчет и итоговые файлы.
 """
 
 # ==================== ИМПОРТ БИБЛИОТЕК ====================
@@ -40,7 +41,7 @@ class JSONCleanerApp:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("Очистка JSON от дубликатов v1.6")
+        self.root.title("Очистка JSON от дубликатов v1.7")
         self.root.geometry("750x550")
         self.root.resizable(True, True)
         
@@ -211,10 +212,8 @@ class JSONCleanerApp:
         """
         Внутри значения ключа "title" или "Наименование"
         заменяет все кавычки " на дефис -, оставляя внешние кавычки как есть.
-        
         Работает на сырой строке до json.loads.
         """
-        # Обрабатываем оба ключа
         for key in ('"title"', '"Наименование"'):
             search_pos = 0
             while True:
@@ -222,18 +221,14 @@ class JSONCleanerApp:
                 if idx_key == -1:
                     break
                 
-                # Двоеточие после ключа
                 idx_colon = line.find(':', idx_key + len(key))
                 if idx_colon == -1:
                     break
                 
-                # Открывающая кавычка значения
                 idx_open = line.find('"', idx_colon + 1)
                 if idx_open == -1:
                     break
                 
-                # Ищем закрывающую кавычку значения:
-                # та, после которой первый значимый символ — ',', '}' или ']'
                 n = len(line)
                 i = idx_open + 1
                 closing = -1
@@ -241,7 +236,6 @@ class JSONCleanerApp:
                     ch = line[i]
                     if ch == '"':
                         j = i + 1
-                        # пропускаем пробелы
                         while j < n and line[j] in ' \t\r\n':
                             j += 1
                         if j >= n:
@@ -250,21 +244,17 @@ class JSONCleanerApp:
                         if line[j] in ',}]':
                             closing = i
                             break
-                        # иначе это внутренняя кавычка, идем дальше
                     i += 1
                 
                 if closing == -1:
-                    # Не нашли корректного конца — не трогаем этот ключ
                     search_pos = idx_key + len(key)
                     continue
                 
-                # Значение между внешними кавычками
                 value = line[idx_open + 1:closing]
                 if '"' in value:
                     fixed_value = value.replace('"', '-')
                     line = line[:idx_open + 1] + fixed_value + line[closing:]
-                    # Продолжаем поиск после обработанного значения
-                    search_pos = idx_open + 1 + len(fixed_value) + 1  # +1 за закрывающую кавычку
+                    search_pos = idx_open + 1 + len(fixed_value) + 1
                 else:
                     search_pos = closing + 1
         
@@ -278,15 +268,9 @@ class JSONCleanerApp:
         2) удаляет вообще все символы "\" в любом месте строки,
         3) в значениях title/Наименование внутренние " заменяет на "-".
         """
-        # 1. Удаляем все управляющие символы
         line = self.re_control_chars.sub('', line)
-        
-        # 2. Удаляем все обратные слеши "\"
         line = line.replace('\\', '')
-        
-        # 3. Чиним внутренние кавычки в значениях title/Наименование
         line = self.fix_inner_quotes_in_title(line)
-        
         return line
     
     
@@ -305,7 +289,7 @@ class JSONCleanerApp:
         file_name_no_ext = os.path.splitext(os.path.basename(file_path))[0]
         errors_file = os.path.join(file_dir, f"{file_name_no_ext}_errors.txt")
         
-        # Подсчет строк
+        # Подсчет строк (физических)
         self.log("   Подсчёт строк...")
         with open(file_path, 'r', encoding='utf-8') as f_count:
             total_lines = sum(1 for _ in f_count)
@@ -320,21 +304,45 @@ class JSONCleanerApp:
         parse_errors = 0
         
         with open(file_path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
+            line_num = 0
+            while True:
                 if self.stop_processing:
                     return
+                
+                line = f.readline()
+                if not line:
+                    break
+                line_num += 1
+                
                 if line_num % 10000 == 0:
                     self.progress_current['value'] = (line_num / total_lines) * 100
                     self.root.update_idletasks()
                 
                 original_line = line
-                line = line.strip()
-                if not line:
+                stripped = line.strip()
+                
+                # --- СКЛЕЙКА ОБРЫВКА {"title": " ИЛИ {"Наименование": " ---
+                if stripped in ('{"title": "', '{"Наименование": "'):
+                    # читаем следующую физическую строку и склеиваем
+                    next_line = f.readline()
+                    if next_line:
+                        line_num += 1
+                        if line_num % 10000 == 0:
+                            self.progress_current['value'] = (line_num / total_lines) * 100
+                            self.root.update_idletasks()
+                        # склеиваем без добавления лишнего перевода строки
+                        original_line = original_line.rstrip('\r\n') + next_line
+                        stripped = original_line.strip()
+                    # если next_line пустая (EOF) — оставляем как есть, пусть уйдет в ошибки JSON
+                
+                # Дальше работаем с (возможно уже склеенной) строкой
+                line_proc = stripped
+                if not line_proc:
                     empty_lines += 1
                     continue
                 
                 # --- ЭТАП 1: ОЧИСТКА СЫРОЙ СТРОКИ ---
-                cleaned_line = self.clean_raw_line(line)
+                cleaned_line = self.clean_raw_line(line_proc)
                 
                 # --- ЭТАП 2: ПАРСИНГ ---
                 try:
@@ -344,7 +352,7 @@ class JSONCleanerApp:
                     skipped_items.append({
                         'reason': 'json_error',
                         'line_number': line_num,
-                        'content': original_line.strip(),  # сохраняем оригинал в лог
+                        'content': original_line.strip(),
                         'error': str(e)
                     })
                     continue
@@ -364,7 +372,6 @@ class JSONCleanerApp:
                     clean_title = self.normalize_title_final(raw_title)
                     record[title_field] = clean_title
                     
-                    # Проверка уникальности
                     if clean_title in seen_titles:
                         duplicates += 1
                         skipped_items.append({
