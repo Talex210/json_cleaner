@@ -1,16 +1,10 @@
 """
 Скрипт для удаления дубликатов в JSON файлах
-Версия: 1.7 — полное удаление "\" + замена внутренних кавычек + склейка обрезанных title
+Версия: 1.8 — полное удаление "\" + замена внутренних кавычек + склейка обрезанных title + игнор битых байт UTF-8
 
-Что делает скрипт:
-1. Читает файл построчно.
-2. Если встречаем строку {"title": " или {"Наименование": ", склеиваем её со следующей строкой.
-3. ДО парсинга JSON очищает сырую строку от всех "\" и всех управляющих символов.
-4. ДО парсинга заменяет внутренние " в значениях title/Наименование на "-".
-5. Парсит JSON.
-6. Нормализует title (удаляет пробелы по краям).
-7. Удаляет дубликаты.
-8. Формирует отчет и итоговые файлы.
+Основное изменение v1.8:
+- При чтении файла используется errors='ignore', чтобы игнорировать некорректные байты UTF-8
+  и не падать с UnicodeDecodeError.
 """
 
 # ==================== ИМПОРТ БИБЛИОТЕК ====================
@@ -41,7 +35,7 @@ class JSONCleanerApp:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("Очистка JSON от дубликатов v1.7")
+        self.root.title("Очистка JSON от дубликатов v1.8")
         self.root.geometry("750x550")
         self.root.resizable(True, True)
         
@@ -291,7 +285,8 @@ class JSONCleanerApp:
         
         # Подсчет строк (физических)
         self.log("   Подсчёт строк...")
-        with open(file_path, 'r', encoding='utf-8') as f_count:
+        # ВАЖНО: errors='ignore' — игнорируем битые байты UTF-8
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f_count:
             total_lines = sum(1 for _ in f_count)
         self.log(f"   Строк: {total_lines:,}".replace(',', ' '))
         
@@ -303,7 +298,8 @@ class JSONCleanerApp:
         duplicates = 0
         parse_errors = 0
         
-        with open(file_path, 'r', encoding='utf-8') as f:
+        # Основное чтение файла — тоже с errors='ignore'
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             line_num = 0
             while True:
                 if self.stop_processing:
@@ -323,19 +319,15 @@ class JSONCleanerApp:
                 
                 # --- СКЛЕЙКА ОБРЫВКА {"title": " ИЛИ {"Наименование": " ---
                 if stripped in ('{"title": "', '{"Наименование": "'):
-                    # читаем следующую физическую строку и склеиваем
                     next_line = f.readline()
                     if next_line:
                         line_num += 1
                         if line_num % 10000 == 0:
                             self.progress_current['value'] = (line_num / total_lines) * 100
                             self.root.update_idletasks()
-                        # склеиваем без добавления лишнего перевода строки
                         original_line = original_line.rstrip('\r\n') + next_line
                         stripped = original_line.strip()
-                    # если next_line пустая (EOF) — оставляем как есть, пусть уйдет в ошибки JSON
                 
-                # Дальше работаем с (возможно уже склеенной) строкой
                 line_proc = stripped
                 if not line_proc:
                     empty_lines += 1
