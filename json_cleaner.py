@@ -1,14 +1,14 @@
 """
 Скрипт для удаления дубликатов в JSON файлах
-Версия: 1.1 — с сохранением проблемных строк
+Версия: 1.2 — нормализация title и расширенный отчёт
 
 Что делает скрипт:
 1. Открывает окно для выбора JSON файла (или нескольких файлов)
 2. Удаляет пустые строки
-3. Удаляет дубликаты по полю "title" или "Наименование"
+3. Очищает значения полей "title" / "Наименование" и удаляет дубликаты по ним
 4. Заменяет значения полей stock/Склад, under_order/Под заказ, price/Цена
 5. Разбивает большие файлы на части по 3 000 000 строк
-6. Сохраняет проблемные строки в отдельный файл для проверки
+6. Сохраняет в отчёт строки, которые не попали в итоговый файл
 7. Сохраняет результат в той же папке
 """
 
@@ -34,6 +34,12 @@ NEW_STOCK_VALUE = "188"
 NEW_UNDER_ORDER_VALUE = "5-8 дней"
 NEW_PRICE_VALUE = "110 руб"
 
+# Символы, которые нужно вырезать из title / Наименование
+#   пробелы по краям удаляются через .strip()
+#   внутри строки удаляются: "\" и управляющие символы 0x02, 0x01, 0x17, 0x03, 0x04, 0x1F
+BAD_TITLE_CHARS = '\\\x02\x01\x17\x03\x04\x1f'
+TITLE_TRANSLATION_TABLE = str.maketrans('', '', BAD_TITLE_CHARS)
+
 
 # ==================== ГЛАВНЫЙ КЛАСС ПРИЛОЖЕНИЯ ====================
 
@@ -47,7 +53,7 @@ class JSONCleanerApp:
         Инициализация приложения.
         """
         self.root = root
-        self.root.title("Очистка JSON от дубликатов v1.1")
+        self.root.title("Очистка JSON от дубликатов v1.2")
         self.root.geometry("750x550")
         self.root.resizable(True, True)
         
@@ -114,10 +120,11 @@ class JSONCleanerApp:
         scrollbar = tk.Scrollbar(list_container)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
+        # Уменьшили высоту в два раза (было 6 -> стало 3)
         self.files_listbox = tk.Listbox(
             list_container,
             font=("Consolas", 10),
-            height=6,
+            height=3,
             yscrollcommand=scrollbar.set
         )
         self.files_listbox.pack(fill=tk.BOTH, expand=True)
@@ -175,10 +182,11 @@ class JSONCleanerApp:
         log_scrollbar = tk.Scrollbar(log_frame)
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
+        # Увеличили высоту (было 10 -> стало 15)
         self.log_text = tk.Text(
             log_frame,
             font=("Consolas", 9),
-            height=10,
+            height=15,
             state=tk.DISABLED,
             yscrollcommand=log_scrollbar.set
         )
@@ -309,8 +317,23 @@ class JSONCleanerApp:
                 f"Обработка {total_files} файлов завершена!\n"
                 f"Время: {elapsed_time:.1f} секунд\n\n"
                 f"Проверьте файлы *_errors.txt для просмотра\n"
-                f"проблемных строк (если они есть)."
+                f"строк, не попавших в итоговый файл (если они есть)."
             )
+    
+    
+    def normalize_title(self, title):
+        """
+        Очищает значение title / Наименование:
+        - обрезает пробелы по краям;
+        - удаляет все "\" и управляющие символы 0x02,0x01,0x17,0x03,0x04,0x1F.
+        """
+        if title is None:
+            return None
+        if not isinstance(title, str):
+            title = str(title)
+        # Сначала обрезаем пробелы, потом удаляем лишние символы и ещё раз обрезаем
+        cleaned = title.strip().translate(TITLE_TRANSLATION_TABLE).strip()
+        return cleaned
     
     
     def process_single_file(self, file_path):
@@ -322,7 +345,7 @@ class JSONCleanerApp:
         file_dir = os.path.dirname(file_path)
         file_name_without_ext = os.path.splitext(file_name)[0]
         
-        # Путь к файлу с проблемными строками
+        # Путь к файлу с отчётом по пропущенным строкам
         errors_file_path = os.path.join(file_dir, f"{file_name_without_ext}_errors.txt")
         
         # ШАГ 1: Подсчитываем количество строк
@@ -343,8 +366,8 @@ class JSONCleanerApp:
         seen_titles = set()
         unique_records = []
         
-        # Список для проблемных строк
-        error_lines = []
+        # Список для строк, не попавших в итоговый файл
+        skipped_items = []
         
         # Счётчики
         empty_lines = 0
@@ -362,7 +385,7 @@ class JSONCleanerApp:
                     self.progress_current['value'] = progress_percent
                     self.root.update_idletasks()
                 
-                # Сохраняем оригинальную строку для отчёта об ошибках
+                # Сохраняем оригинальную строку для отчёта
                 original_line = line
                 
                 # Убираем пробелы и переносы
@@ -377,9 +400,9 @@ class JSONCleanerApp:
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError as e:
-                    # Сохраняем информацию о проблемной строке
                     parse_errors += 1
-                    error_lines.append({
+                    skipped_items.append({
+                        'reason': 'json_error',
                         'line_number': line_number,
                         'content': original_line.strip(),
                         'error': str(e)
@@ -387,21 +410,40 @@ class JSONCleanerApp:
                     continue
                 
                 # Получаем значение title или Наименование
-                title = None
+                title_field = None
+                raw_title = None
+                normalized_title = None
+                
                 if 'title' in record:
-                    title = record.get('title')
+                    title_field = 'title'
+                    raw_title = record.get('title')
                 elif 'Наименование' in record:
-                    title = record.get('Наименование')
+                    title_field = 'Наименование'
+                    raw_title = record.get('Наименование')
                 
-                # Проверка на дубликаты
-                if title is not None:
-                    if title in seen_titles:
-                        duplicates += 1
-                        continue
-                    else:
-                        seen_titles.add(title)
+                # Если есть одно из полей — очищаем и проверяем на дубликат
+                if title_field is not None:
+                    normalized_title = self.normalize_title(raw_title)
+                    # Записываем очищенное значение обратно в запись
+                    record[title_field] = normalized_title
+                    
+                    # Уникальность обеспечиваем по очищенному значению
+                    if normalized_title is not None:
+                        if normalized_title in seen_titles:
+                            duplicates += 1
+                            skipped_items.append({
+                                'reason': 'duplicate',
+                                'line_number': line_number,
+                                'field_name': title_field,
+                                'original_title': raw_title,
+                                'normalized_title': normalized_title,
+                                'content': original_line.strip()
+                            })
+                            continue
+                        else:
+                            seen_titles.add(normalized_title)
                 
-                # Заменяем значения полей
+                # Заменяем значения полей stock / under_order / price
                 record = self.replace_field_values(record)
                 
                 unique_records.append(record)
@@ -414,14 +456,18 @@ class JSONCleanerApp:
         self.log(f"   ✓ Пустых строк удалено: {empty_lines:,}".replace(',', ' '))
         self.log(f"   ✓ Дубликатов удалено: {duplicates:,}".replace(',', ' '))
         self.log(f"   ✓ Уникальных записей: {len(unique_records):,}".replace(',', ' '))
+        self.log(f"   ⚠️ Строк с ошибкой JSON: {parse_errors:,}".replace(',', ' '))
         
-        # ШАГ 3: Сохраняем проблемные строки (если есть)
-        if error_lines:
-            self.log(f"   ⚠️ Проблемных строк: {parse_errors:,}".replace(',', ' '))
-            self.save_error_lines(error_lines, errors_file_path)
-            self.log(f"   📝 Проблемные строки сохранены в: {os.path.basename(errors_file_path)}")
+        # ШАГ 3: Сохраняем отчёт по строкам, не попавшим в итоговый файл
+        if skipped_items:
+            self.log(
+                f"   ⚠️ Строк, не попавших в итоговый файл: "
+                f"{len(skipped_items):,}".replace(',', ' ')
+            )
+            self.save_error_lines(skipped_items, errors_file_path)
+            self.log(f"   📝 Отчёт сохранён в: {os.path.basename(errors_file_path)}")
         else:
-            self.log(f"   ✓ Проблемных строк: 0")
+            self.log(f"   ✓ Все распознанные строки попали в итоговый файл")
         
         # ШАГ 4: Сохраняем результат
         self.log("   Сохранение результата...")
@@ -431,7 +477,10 @@ class JSONCleanerApp:
             self.save_records_to_file(unique_records, output_file)
             self.log(f"   ✓ Сохранено в: {os.path.basename(output_file)}")
         else:
-            self.log(f"   📦 Разбиваем на части по {MAX_LINES_PER_FILE:,} строк...".replace(',', ' '))
+            self.log(
+                f"   📦 Разбиваем на части по {MAX_LINES_PER_FILE:,} строк..."
+                .replace(',', ' ')
+            )
             
             part_number = 1
             for i in range(0, len(unique_records), MAX_LINES_PER_FILE):
@@ -441,33 +490,60 @@ class JSONCleanerApp:
                     f"{file_name_without_ext}_cleaned_part{part_number}.json"
                 )
                 self.save_records_to_file(chunk, output_file)
-                self.log(f"   ✓ Часть {part_number}: {len(chunk):,} записей".replace(',', ' '))
+                self.log(
+                    f"   ✓ Часть {part_number}: {len(chunk):,} записей"
+                    .replace(',', ' ')
+                )
                 part_number += 1
         
         self.log(f"   ✅ Файл обработан успешно!")
     
     
-    def save_error_lines(self, error_lines, output_file):
+    def save_error_lines(self, skipped_items, output_file):
         """
-        Сохраняет проблемные строки в текстовый файл для проверки.
+        Сохраняет в текстовый файл строки, которые не попали в итоговый JSON.
         
-        error_lines — список словарей с информацией о проблемных строках
-        output_file — путь к файлу для сохранения
+        skipped_items — список словарей с ключами:
+            reason: 'json_error' или 'duplicate'
+            line_number: номер строки в исходном файле
+            content: исходный текст строки
+            ...
         """
+        json_errors = [x for x in skipped_items if x['reason'] == 'json_error']
+        duplicates = [x for x in skipped_items if x['reason'] == 'duplicate']
+        
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write("=" * 80 + "\n")
-            f.write("ОТЧЁТ О ПРОБЛЕМНЫХ СТРОКАХ\n")
+            f.write("ОТЧЁТ О СТРОКАХ, НЕ ПОПАВШИХ В ИТОГОВЫЙ ФАЙЛ\n")
             f.write("=" * 80 + "\n\n")
-            f.write(f"Всего проблемных строк: {len(error_lines)}\n\n")
-            f.write("Эти строки не удалось распознать как JSON.\n")
-            f.write("Проверьте их вручную — возможно, там важные данные.\n\n")
-            f.write("-" * 80 + "\n\n")
+            f.write(f"Всего пропущенных строк: {len(skipped_items)}\n")
+            f.write(f"  - ошибок JSON:      {len(json_errors)}\n")
+            f.write(f"  - дубликатов title: {len(duplicates)}\n\n")
+            f.write("Ниже перечислены строки, которые НЕ были записаны в итоговый файл.\n\n")
             
-            for item in error_lines:
-                f.write(f"Строка #{item['line_number']}:\n")
-                f.write(f"Содержимое: {item['content']}\n")
-                f.write(f"Ошибка: {item['error']}\n")
-                f.write("\n" + "-" * 40 + "\n\n")
+            if json_errors:
+                f.write("=" * 80 + "\n")
+                f.write("РАЗДЕЛ 1. Строки с ошибкой JSON\n")
+                f.write("=" * 80 + "\n\n")
+                for item in json_errors:
+                    f.write(f"Строка #{item['line_number']} (ошибка JSON):\n")
+                    f.write(f"Содержимое: {item['content']}\n")
+                    f.write(f"Ошибка: {item['error']}\n")
+                    f.write("\n" + "-" * 40 + "\n\n")
+            
+            if duplicates:
+                f.write("=" * 80 + "\n")
+                f.write("РАЗДЕЛ 2. Дубликаты по title / Наименование\n")
+                f.write("=" * 80 + "\n\n")
+                for item in duplicates:
+                    f.write(
+                        f"Строка #{item['line_number']} "
+                        f"(дубликат по полю \"{item['field_name']}\"):\n"
+                    )
+                    f.write(f"Изначальное значение: {repr(item['original_title'])}\n")
+                    f.write(f"После очистки:        {repr(item['normalized_title'])}\n")
+                    f.write(f"Содержимое: {item['content']}\n")
+                    f.write("\n" + "-" * 40 + "\n\n")
     
     
     def replace_field_values(self, record):
