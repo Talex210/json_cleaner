@@ -1,7 +1,6 @@
 """
 Скрипт для удаления дубликатов в JSON файлах
-Автор: Assistant
-Версия: 1.0
+Версия: 1.1 — с сохранением проблемных строк
 
 Что делает скрипт:
 1. Открывает окно для выбора JSON файла (или нескольких файлов)
@@ -9,85 +8,74 @@
 3. Удаляет дубликаты по полю "title" или "Наименование"
 4. Заменяет значения полей stock/Склад, under_order/Под заказ, price/Цена
 5. Разбивает большие файлы на части по 3 000 000 строк
-6. Сохраняет результат в той же папке
+6. Сохраняет проблемные строки в отдельный файл для проверки
+7. Сохраняет результат в той же папке
 """
 
 # ==================== ИМПОРТ БИБЛИОТЕК ====================
-# Это как "подключение инструментов" которые нам понадобятся
 
-import tkinter as tk                    # Библиотека для создания окон и кнопок
-from tkinter import filedialog          # Для окна выбора файлов
-from tkinter import ttk                 # Для красивой шкалы прогресса
-from tkinter import messagebox          # Для всплывающих сообщений
-import json                             # Для работы с JSON файлами
-import threading                        # Для работы в нескольких потоках (чтобы окно не зависало)
-import os                               # Для работы с файлами и папками
-import time                             # Для измерения времени работы
+import tkinter as tk
+from tkinter import filedialog
+from tkinter import ttk
+from tkinter import messagebox
+import json
+import threading
+import os
+import time
 
 
 # ==================== НАСТРОЙКИ ====================
-# Здесь можно менять значения для замены полей
 
 # Максимальное количество строк в одном файле
 MAX_LINES_PER_FILE = 3000000  # 3 миллиона строк
 
 # Значения для замены полей
-NEW_STOCK_VALUE = "188"           # Новое значение для поля "stock" или "Склад"
-NEW_UNDER_ORDER_VALUE = "5-8 дней"  # Новое значение для поля "under_order" или "Под заказ"
-NEW_PRICE_VALUE = "110 руб"       # Новое значение для поля "price" или "Цена"
+NEW_STOCK_VALUE = "188"
+NEW_UNDER_ORDER_VALUE = "5-8 дней"
+NEW_PRICE_VALUE = "110 руб"
 
 
 # ==================== ГЛАВНЫЙ КЛАСС ПРИЛОЖЕНИЯ ====================
-# Класс — это как "чертёж" нашей программы, в котором описано всё, что она умеет делать
 
 class JSONCleanerApp:
     """
     Главный класс приложения.
-    Создаёт окно с кнопками и управляет всей работой программы.
     """
     
     def __init__(self, root):
         """
-        Инициализация — это то, что происходит при запуске программы.
-        root — это главное окно программы.
+        Инициализация приложения.
         """
-        self.root = root  # Сохраняем ссылку на главное окно
-        self.root.title("Очистка JSON от дубликатов")  # Заголовок окна
-        self.root.geometry("700x500")  # Размер окна: ширина x высота
-        self.root.resizable(True, True)  # Можно ли менять размер окна
+        self.root = root
+        self.root.title("Очистка JSON от дубликатов v1.1")
+        self.root.geometry("750x550")
+        self.root.resizable(True, True)
         
-        # Список выбранных файлов (пока пустой)
         self.selected_files = []
-        
-        # Флаг для остановки обработки
         self.stop_processing = False
         
-        # Создаём все элементы интерфейса
         self.create_widgets()
     
     
     def create_widgets(self):
         """
-        Создание всех элементов интерфейса: кнопок, надписей, шкалы прогресса.
+        Создание всех элементов интерфейса.
         """
         
         # ---------- РАМКА ДЛЯ КНОПОК ВВЕРХУ ----------
-        # Frame — это как "контейнер" для группировки элементов
-        top_frame = tk.Frame(self.root, pady=10)  # pady — отступ сверху и снизу
-        top_frame.pack(fill=tk.X)  # pack — размещаем на окне, fill=X — растянуть по ширине
+        top_frame = tk.Frame(self.root, pady=10)
+        top_frame.pack(fill=tk.X)
         
-        # Кнопка "Загрузить файлы"
         self.btn_load = tk.Button(
-            top_frame,                          # В какой рамке разместить
-            text="📂 Загрузить файлы (до 10)",  # Текст на кнопке
-            command=self.load_files,            # Какую функцию вызвать при нажатии
-            font=("Arial", 12),                 # Шрифт и размер
-            width=25,                           # Ширина кнопки
-            height=2                            # Высота кнопки
+            top_frame,
+            text="📂 Загрузить файлы (до 10)",
+            command=self.load_files,
+            font=("Arial", 12),
+            width=25,
+            height=2
         )
-        self.btn_load.pack(side=tk.LEFT, padx=10)  # Разместить слева с отступом
+        self.btn_load.pack(side=tk.LEFT, padx=10)
         
-        # Кнопка "Удалить дубликаты"
         self.btn_process = tk.Button(
             top_frame,
             text="🔧 Удалить дубликаты",
@@ -95,11 +83,10 @@ class JSONCleanerApp:
             font=("Arial", 12),
             width=25,
             height=2,
-            state=tk.DISABLED  # Кнопка неактивна, пока не выбраны файлы
+            state=tk.DISABLED
         )
         self.btn_process.pack(side=tk.LEFT, padx=10)
         
-        # Кнопка "Остановить"
         self.btn_stop = tk.Button(
             top_frame,
             text="⏹ Остановить",
@@ -107,7 +94,7 @@ class JSONCleanerApp:
             font=("Arial", 12),
             width=15,
             height=2,
-            state=tk.DISABLED  # Неактивна, пока обработка не идёт
+            state=tk.DISABLED
         )
         self.btn_stop.pack(side=tk.LEFT, padx=10)
         
@@ -115,27 +102,23 @@ class JSONCleanerApp:
         files_frame = tk.Frame(self.root, pady=5)
         files_frame.pack(fill=tk.BOTH, expand=True, padx=10)
         
-        # Заголовок списка
         tk.Label(
             files_frame, 
             text="Выбранные файлы:", 
             font=("Arial", 11, "bold")
-        ).pack(anchor=tk.W)  # anchor=W — прижать к левому краю (West)
+        ).pack(anchor=tk.W)
         
-        # Список файлов с прокруткой
         list_container = tk.Frame(files_frame)
         list_container.pack(fill=tk.BOTH, expand=True)
         
-        # Полоса прокрутки
         scrollbar = tk.Scrollbar(list_container)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Сам список (Listbox)
         self.files_listbox = tk.Listbox(
             list_container,
             font=("Consolas", 10),
-            height=8,
-            yscrollcommand=scrollbar.set  # Связываем с прокруткой
+            height=6,
+            yscrollcommand=scrollbar.set
         )
         self.files_listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.files_listbox.yview)
@@ -144,7 +127,6 @@ class JSONCleanerApp:
         progress_frame = tk.Frame(self.root, pady=10)
         progress_frame.pack(fill=tk.X, padx=10)
         
-        # Надпись над шкалой прогресса (для текущего файла)
         self.label_current_file = tk.Label(
             progress_frame,
             text="Ожидание...",
@@ -152,7 +134,6 @@ class JSONCleanerApp:
         )
         self.label_current_file.pack(anchor=tk.W)
         
-        # Шкала прогресса для файлов
         tk.Label(
             progress_frame, 
             text="Прогресс по файлам:", 
@@ -161,13 +142,12 @@ class JSONCleanerApp:
         
         self.progress_files = ttk.Progressbar(
             progress_frame,
-            orient=tk.HORIZONTAL,  # Горизонтальная шкала
-            length=650,            # Длина шкалы
-            mode='determinate'     # Режим с конкретным прогрессом (0-100%)
+            orient=tk.HORIZONTAL,
+            length=700,
+            mode='determinate'
         )
         self.progress_files.pack(fill=tk.X, pady=2)
         
-        # Шкала прогресса для текущего файла
         tk.Label(
             progress_frame, 
             text="Прогресс текущего файла:", 
@@ -177,12 +157,12 @@ class JSONCleanerApp:
         self.progress_current = ttk.Progressbar(
             progress_frame,
             orient=tk.HORIZONTAL,
-            length=650,
+            length=700,
             mode='determinate'
         )
         self.progress_current.pack(fill=tk.X, pady=2)
         
-        # ---------- ОБЛАСТЬ ДЛЯ ЛОГОВ (СООБЩЕНИЙ) ----------
+        # ---------- ОБЛАСТЬ ДЛЯ ЛОГОВ ----------
         log_frame = tk.Frame(self.root, pady=5)
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         
@@ -192,16 +172,14 @@ class JSONCleanerApp:
             font=("Arial", 11, "bold")
         ).pack(anchor=tk.W)
         
-        # Полоса прокрутки для лога
         log_scrollbar = tk.Scrollbar(log_frame)
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Текстовое поле для лога
         self.log_text = tk.Text(
             log_frame,
             font=("Consolas", 9),
-            height=8,
-            state=tk.DISABLED,  # Нельзя редактировать вручную
+            height=10,
+            state=tk.DISABLED,
             yscrollcommand=log_scrollbar.set
         )
         self.log_text.pack(fill=tk.BOTH, expand=True)
@@ -210,20 +188,18 @@ class JSONCleanerApp:
     
     def log(self, message):
         """
-        Добавляет сообщение в лог (текстовое поле внизу окна).
+        Добавляет сообщение в лог.
         """
-        self.log_text.config(state=tk.NORMAL)  # Разрешаем редактирование
-        self.log_text.insert(tk.END, message + "\n")  # Добавляем текст в конец
-        self.log_text.see(tk.END)  # Прокручиваем к концу
-        self.log_text.config(state=tk.DISABLED)  # Запрещаем редактирование
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state=tk.DISABLED)
     
     
     def load_files(self):
         """
         Открывает диалог выбора файлов.
-        Позволяет выбрать до 10 JSON файлов.
         """
-        # Открываем диалог выбора файлов
         files = filedialog.askopenfilenames(
             title="Выберите JSON файлы (до 10 штук)",
             filetypes=[
@@ -232,62 +208,48 @@ class JSONCleanerApp:
             ]
         )
         
-        # Если пользователь нажал "Отмена", files будет пустым
         if not files:
             return
         
-        # Проверяем, что выбрано не более 10 файлов
         if len(files) > 10:
             messagebox.showwarning(
                 "Слишком много файлов",
                 "Можно выбрать максимум 10 файлов.\nВыбраны первые 10."
             )
-            files = files[:10]  # Берём только первые 10
+            files = files[:10]
         
-        # Сохраняем список файлов
         self.selected_files = list(files)
         
-        # Очищаем список в интерфейсе
         self.files_listbox.delete(0, tk.END)
         
-        # Добавляем файлы в список
         for file_path in self.selected_files:
-            # Получаем только имя файла (без полного пути)
             file_name = os.path.basename(file_path)
             self.files_listbox.insert(tk.END, file_name)
         
-        # Активируем кнопку обработки
         self.btn_process.config(state=tk.NORMAL)
         
-        # Сообщение в лог
         self.log(f"Выбрано файлов: {len(self.selected_files)}")
     
     
     def start_processing(self):
         """
         Запускает обработку файлов в отдельном потоке.
-        Отдельный поток нужен, чтобы окно не зависало во время работы.
         """
         if not self.selected_files:
             messagebox.showwarning("Нет файлов", "Сначала выберите файлы для обработки!")
             return
         
-        # Сбрасываем флаг остановки
         self.stop_processing = False
         
-        # Блокируем кнопки во время обработки
         self.btn_load.config(state=tk.DISABLED)
         self.btn_process.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
         
-        # Сбрасываем прогресс
         self.progress_files['value'] = 0
         self.progress_current['value'] = 0
         
-        # Запускаем обработку в отдельном потоке
-        # threading.Thread создаёт новый поток выполнения
         processing_thread = threading.Thread(target=self.process_files)
-        processing_thread.daemon = True  # Поток завершится при закрытии программы
+        processing_thread.daemon = True
         processing_thread.start()
     
     
@@ -302,22 +264,19 @@ class JSONCleanerApp:
     def process_files(self):
         """
         Основная функция обработки всех выбранных файлов.
-        Выполняется в отдельном потоке.
         """
         total_files = len(self.selected_files)
         start_time = time.time()
         
-        self.log("=" * 50)
+        self.log("=" * 60)
         self.log(f"🚀 Начинаем обработку {total_files} файлов...")
-        self.log("=" * 50)
+        self.log("=" * 60)
         
         for index, file_path in enumerate(self.selected_files):
-            # Проверяем, не нажата ли кнопка "Остановить"
             if self.stop_processing:
                 self.log("❌ Обработка остановлена пользователем")
                 break
             
-            # Обновляем надпись текущего файла
             file_name = os.path.basename(file_path)
             self.label_current_file.config(
                 text=f"Обрабатывается: {file_name} ({index + 1}/{total_files})"
@@ -326,56 +285,47 @@ class JSONCleanerApp:
             self.log(f"\n📄 Файл {index + 1}/{total_files}: {file_name}")
             
             try:
-                # Обрабатываем файл
                 self.process_single_file(file_path)
             except Exception as e:
                 self.log(f"❌ Ошибка при обработке файла: {str(e)}")
             
-            # Обновляем прогресс по файлам
             progress_percent = ((index + 1) / total_files) * 100
             self.progress_files['value'] = progress_percent
-            self.root.update_idletasks()  # Обновляем интерфейс
+            self.root.update_idletasks()
         
-        # Обработка завершена
         elapsed_time = time.time() - start_time
-        self.log("=" * 50)
+        self.log("=" * 60)
         self.log(f"✅ Обработка завершена за {elapsed_time:.1f} секунд")
-        self.log("=" * 50)
+        self.log("=" * 60)
         
-        # Разблокируем кнопки
         self.btn_load.config(state=tk.NORMAL)
         self.btn_process.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
         self.label_current_file.config(text="Готово!")
         
-        # Показываем сообщение об успешном завершении
         if not self.stop_processing:
             messagebox.showinfo(
                 "Готово!", 
                 f"Обработка {total_files} файлов завершена!\n"
-                f"Время: {elapsed_time:.1f} секунд"
+                f"Время: {elapsed_time:.1f} секунд\n\n"
+                f"Проверьте файлы *_errors.txt для просмотра\n"
+                f"проблемных строк (если они есть)."
             )
     
     
     def process_single_file(self, file_path):
         """
         Обрабатывает один JSON файл.
-        
-        Шаги:
-        1. Читаем файл построчно
-        2. Пропускаем пустые строки
-        3. Парсим JSON
-        4. Проверяем на дубликаты по title/Наименование
-        5. Заменяем значения полей
-        6. Если строк больше 3 000 000 — разбиваем на несколько файлов
-        7. Сохраняем результат
         """
         
         file_name = os.path.basename(file_path)
         file_dir = os.path.dirname(file_path)
         file_name_without_ext = os.path.splitext(file_name)[0]
         
-        # ШАГ 1: Подсчитываем количество строк в файле
+        # Путь к файлу с проблемными строками
+        errors_file_path = os.path.join(file_dir, f"{file_name_without_ext}_errors.txt")
+        
+        # ШАГ 1: Подсчитываем количество строк
         self.log("   Подсчёт строк в файле...")
         self.progress_current['value'] = 0
         self.root.update_idletasks()
@@ -390,23 +340,19 @@ class JSONCleanerApp:
         # ШАГ 2: Читаем и обрабатываем файл
         self.log("   Чтение и обработка данных...")
         
-        # Множество (set) для хранения уже встреченных значений title
-        # Множество позволяет быстро проверять, есть ли уже такое значение
         seen_titles = set()
-        
-        # Список для хранения уникальных записей
         unique_records = []
         
-        # Счётчики для статистики
+        # Список для проблемных строк
+        error_lines = []
+        
+        # Счётчики
         empty_lines = 0
         duplicates = 0
-        processed_lines = 0
         parse_errors = 0
         
-        # Открываем файл для чтения
         with open(file_path, 'r', encoding='utf-8') as f:
             for line_number, line in enumerate(f, 1):
-                # Проверяем, не остановлена ли обработка
                 if self.stop_processing:
                     return
                 
@@ -416,7 +362,10 @@ class JSONCleanerApp:
                     self.progress_current['value'] = progress_percent
                     self.root.update_idletasks()
                 
-                # Убираем пробелы и переносы строк в начале и конце
+                # Сохраняем оригинальную строку для отчёта об ошибках
+                original_line = line
+                
+                # Убираем пробелы и переносы
                 line = line.strip()
                 
                 # Пропускаем пустые строки
@@ -427,9 +376,14 @@ class JSONCleanerApp:
                 # Пытаемся распарсить JSON
                 try:
                     record = json.loads(line)
-                except json.JSONDecodeError:
-                    # Если строка — не валидный JSON, пропускаем её
+                except json.JSONDecodeError as e:
+                    # Сохраняем информацию о проблемной строке
                     parse_errors += 1
+                    error_lines.append({
+                        'line_number': line_number,
+                        'content': original_line.strip(),
+                        'error': str(e)
+                    })
                     continue
                 
                 # Получаем значение title или Наименование
@@ -439,20 +393,18 @@ class JSONCleanerApp:
                 elif 'Наименование' in record:
                     title = record.get('Наименование')
                 
-                # Если title есть и уже был — это дубликат
+                # Проверка на дубликаты
                 if title is not None:
                     if title in seen_titles:
                         duplicates += 1
-                        continue  # Пропускаем дубликат
+                        continue
                     else:
-                        seen_titles.add(title)  # Добавляем в множество
+                        seen_titles.add(title)
                 
                 # Заменяем значения полей
                 record = self.replace_field_values(record)
                 
-                # Добавляем запись в список уникальных
                 unique_records.append(record)
-                processed_lines += 1
         
         # Обновляем прогресс на 100%
         self.progress_current['value'] = 100
@@ -461,19 +413,24 @@ class JSONCleanerApp:
         # Выводим статистику
         self.log(f"   ✓ Пустых строк удалено: {empty_lines:,}".replace(',', ' '))
         self.log(f"   ✓ Дубликатов удалено: {duplicates:,}".replace(',', ' '))
-        self.log(f"   ✓ Ошибок парсинга: {parse_errors:,}".replace(',', ' '))
         self.log(f"   ✓ Уникальных записей: {len(unique_records):,}".replace(',', ' '))
         
-        # ШАГ 3: Сохраняем результат
+        # ШАГ 3: Сохраняем проблемные строки (если есть)
+        if error_lines:
+            self.log(f"   ⚠️ Проблемных строк: {parse_errors:,}".replace(',', ' '))
+            self.save_error_lines(error_lines, errors_file_path)
+            self.log(f"   📝 Проблемные строки сохранены в: {os.path.basename(errors_file_path)}")
+        else:
+            self.log(f"   ✓ Проблемных строк: 0")
+        
+        # ШАГ 4: Сохраняем результат
         self.log("   Сохранение результата...")
         
         if len(unique_records) <= MAX_LINES_PER_FILE:
-            # Если записей меньше или равно 3 миллиона — сохраняем в один файл
             output_file = os.path.join(file_dir, f"{file_name_without_ext}_cleaned.json")
             self.save_records_to_file(unique_records, output_file)
             self.log(f"   ✓ Сохранено в: {os.path.basename(output_file)}")
         else:
-            # Если записей больше 3 миллионов — разбиваем на части
             self.log(f"   📦 Разбиваем на части по {MAX_LINES_PER_FILE:,} строк...".replace(',', ' '))
             
             part_number = 1
@@ -484,18 +441,38 @@ class JSONCleanerApp:
                     f"{file_name_without_ext}_cleaned_part{part_number}.json"
                 )
                 self.save_records_to_file(chunk, output_file)
-                self.log(f"   ✓ Часть {part_number}: {len(chunk):,} записей → {os.path.basename(output_file)}".replace(',', ' '))
+                self.log(f"   ✓ Часть {part_number}: {len(chunk):,} записей".replace(',', ' '))
                 part_number += 1
         
         self.log(f"   ✅ Файл обработан успешно!")
     
     
+    def save_error_lines(self, error_lines, output_file):
+        """
+        Сохраняет проблемные строки в текстовый файл для проверки.
+        
+        error_lines — список словарей с информацией о проблемных строках
+        output_file — путь к файлу для сохранения
+        """
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("=" * 80 + "\n")
+            f.write("ОТЧЁТ О ПРОБЛЕМНЫХ СТРОКАХ\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Всего проблемных строк: {len(error_lines)}\n\n")
+            f.write("Эти строки не удалось распознать как JSON.\n")
+            f.write("Проверьте их вручную — возможно, там важные данные.\n\n")
+            f.write("-" * 80 + "\n\n")
+            
+            for item in error_lines:
+                f.write(f"Строка #{item['line_number']}:\n")
+                f.write(f"Содержимое: {item['content']}\n")
+                f.write(f"Ошибка: {item['error']}\n")
+                f.write("\n" + "-" * 40 + "\n\n")
+    
+    
     def replace_field_values(self, record):
         """
         Заменяет значения полей stock, under_order, price на новые.
-        Также обрабатывает русские названия полей.
-        
-        record — это словарь (одна запись из JSON)
         """
         
         # Замена поля stock / Склад
@@ -523,15 +500,10 @@ class JSONCleanerApp:
     
     def save_records_to_file(self, records, output_file):
         """
-        Сохраняет список записей в JSON файл (по одной записи на строку).
-        
-        records — список словарей
-        output_file — путь к файлу для сохранения
+        Сохраняет список записей в JSON файл.
         """
         with open(output_file, 'w', encoding='utf-8') as f:
             for record in records:
-                # Записываем каждую запись в отдельную строку
-                # ensure_ascii=False — чтобы русские буквы сохранялись как есть
                 json_line = json.dumps(record, ensure_ascii=False)
                 f.write(json_line + '\n')
 
@@ -539,17 +511,6 @@ class JSONCleanerApp:
 # ==================== ЗАПУСК ПРОГРАММЫ ====================
 
 if __name__ == "__main__":
-    """
-    Эта часть кода выполняется только если файл запущен напрямую
-    (а не импортирован как модуль в другую программу).
-    """
-    
-    # Создаём главное окно
     root = tk.Tk()
-    
-    # Создаём наше приложение
     app = JSONCleanerApp(root)
-    
-    # Запускаем главный цикл обработки событий
-    # (программа будет работать, пока окно не закроют)
     root.mainloop()
